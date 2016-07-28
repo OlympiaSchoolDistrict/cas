@@ -380,6 +380,7 @@ func setCookie(w http.ResponseWriter, r *http.Request, ticket string) {
 		Value:    ticket,
 		MaxAge:   86400,
 		HttpOnly: false,
+		Secure:   true,
 	}
 
 	if glog.V(2) {
