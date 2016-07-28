@@ -43,8 +43,8 @@ func TestUnauthenticatedRequestShouldRedirectToCasURL(t *testing.T) {
 	}
 
 	setCookie := w.Header().Get("Set-Cookie")
-	if !strings.HasPrefix(setCookie, sessionCookieName) {
-		t.Errorf("Expected response to have Set-Cookie header with <%v>, got <%v>",
+	if strings.HasPrefix(setCookie, sessionCookieName) {
+		t.Errorf("Expected response to not have Set-Cookie header with <%v>, got <%v>",
 			sessionCookieName, setCookie)
 	}
 
@@ -100,8 +100,8 @@ func TestInvalidServiceTicket(t *testing.T) {
 	}
 
 	setCookie := w.Header().Get("Set-Cookie")
-	if !strings.HasPrefix(setCookie, sessionCookieName) {
-		t.Errorf("Expected response to have Set-Cookie header with <%v>, got <%v>",
+	if strings.HasPrefix(setCookie, sessionCookieName) {
+		t.Errorf("Expected response to not have Set-Cookie header with <%v>, got <%v>",
 			sessionCookieName, setCookie)
 	}
 }

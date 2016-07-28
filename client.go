@@ -1,17 +1,15 @@
 package cas
 
 import (
-	"crypto/rand"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
-	"sync"
 
 	"github.com/golang/glog"
 )
 
-// Client configuration options
+// Options set Client configuration
 type Options struct {
 	URL   *url.URL    // URL to the CAS service
 	Store TicketStore // Custom TicketStore, if nil a MemoryStore will be used
@@ -22,9 +20,6 @@ type Client struct {
 	url     *url.URL
 	tickets TicketStore
 	client  *http.Client
-
-	mu       sync.Mutex
-	sessions map[string]string
 }
 
 // NewClient creates a Client with the provided Options.
@@ -41,10 +36,9 @@ func NewClient(options *Options) *Client {
 	}
 
 	return &Client{
-		url:      options.URL,
-		tickets:  tickets,
-		client:   &http.Client{},
-		sessions: make(map[string]string),
+		url:     options.URL,
+		tickets: tickets,
+		client:  &http.Client{},
 	}
 }
 
@@ -166,7 +160,7 @@ func (c *Client) RedirectToLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, u, http.StatusFound)
 }
 
-// RedirectToLogout replies to the request with a redirect URL to authenticate with CAS.
+// RedirectToLogin replies to the request with a redirect URL to authenticate with CAS.
 func (c *Client) RedirectToLogin(w http.ResponseWriter, r *http.Request) {
 	u, err := c.LoginUrlForRequest(r)
 	if err != nil {
@@ -324,25 +318,26 @@ func (c *Client) validateTicketCas1(ticket string, service *http.Request) error 
 func (c *Client) getSession(w http.ResponseWriter, r *http.Request) {
 	cookie := getCookie(w, r)
 
-	if s, ok := c.sessions[cookie.Value]; ok {
-		if t, err := c.tickets.Read(s); err == nil {
+	if s := cookie.Value; s != "" {
+		t, err := c.tickets.Read(s)
+		if err == nil {
 			if glog.V(1) {
 				glog.Infof("Re-used ticket %s for %s", s, t.User)
 			}
 
 			setAuthenticationResponse(r, t)
 			return
-		} else {
-			if glog.V(2) {
-				glog.Infof("Ticket %v not in %T: %v", s, c.tickets, err)
-			}
-
-			if glog.V(1) {
-				glog.Infof("Clearing ticket %s, no longer exists in ticket store", s)
-			}
-
-			clearCookie(w, cookie)
 		}
+		if glog.V(2) {
+			glog.Infof("Ticket %v not in %T: %v", s, c.tickets, err)
+		}
+
+		if glog.V(1) {
+			glog.Infof("Clearing ticket %s, no longer exists in ticket store", s)
+		}
+
+		clearCookie(w, cookie)
+
 	}
 
 	if ticket := r.URL.Query().Get("ticket"); ticket != "" {
@@ -353,66 +348,59 @@ func (c *Client) getSession(w http.ResponseWriter, r *http.Request) {
 			return // allow ServeHTTP()
 		}
 
-		c.setSession(cookie.Value, ticket)
-
-		if t, err := c.tickets.Read(ticket); err == nil {
+		setCookie(w, r, ticket)
+		t, err := c.tickets.Read(ticket)
+		if err == nil {
 			if glog.V(1) {
 				glog.Infof("Validated ticket %s for %s", ticket, t.User)
 			}
 
 			setAuthenticationResponse(r, t)
 			return
-		} else {
-			if glog.V(2) {
-				glog.Infof("Ticket %v not in %T: %v", ticket, c.tickets, err)
-			}
-
-			if glog.V(1) {
-				glog.Infof("Clearing ticket %s, no longer exists in ticket store", ticket)
-			}
-
-			clearCookie(w, cookie)
 		}
+
+		if glog.V(2) {
+			glog.Infof("Ticket %v not in %T: %v", ticket, c.tickets, err)
+		}
+
+		if glog.V(1) {
+			glog.Infof("Clearing ticket %s, no longer exists in ticket store", ticket)
+		}
+
+		clearCookie(w, cookie)
+
 	}
+}
+
+func setCookie(w http.ResponseWriter, r *http.Request, ticket string) {
+	// NOTE: Intentionally not enabling HttpOnly so the cookie can
+	//       still be used by Ajax requests.
+	c := &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    ticket,
+		MaxAge:   86400,
+		HttpOnly: false,
+	}
+
+	if glog.V(2) {
+		glog.Infof("Setting %v cookie with value: %v", c.Name, c.Value)
+	}
+
+	r.AddCookie(c) // so we can find it later if required
+	http.SetCookie(w, c)
 }
 
 // getCookie finds or creates the session cookie on the response.
 func getCookie(w http.ResponseWriter, r *http.Request) *http.Cookie {
 	c, err := r.Cookie(sessionCookieName)
 	if err != nil {
-		// NOTE: Intentionally not enabling HttpOnly so the cookie can
-		//       still be used by Ajax requests.
-		c = &http.Cookie{
-			Name:     sessionCookieName,
-			Value:    newSessionId(),
-			MaxAge:   86400,
-			HttpOnly: false,
-		}
-
 		if glog.V(2) {
-			glog.Infof("Setting %v cookie with value: %v", c.Name, c.Value)
+			glog.Infof("No cookie found : %v", sessionCookieName)
 		}
-
-		r.AddCookie(c) // so we can find it later if required
-		http.SetCookie(w, c)
+		return &http.Cookie{}
 	}
 
 	return c
-}
-
-// newSessionId generates a new opaque session identifier for use in the cookie.
-func newSessionId() string {
-	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-
-	// generate 64 character string
-	bytes := make([]byte, 64)
-	rand.Read(bytes)
-
-	for k, v := range bytes {
-		bytes[k] = alphabet[v%byte(len(alphabet))]
-	}
-
-	return string(bytes)
 }
 
 // clearCookie invalidates and removes the cookie from the client.
@@ -421,60 +409,18 @@ func clearCookie(w http.ResponseWriter, c *http.Cookie) {
 	http.SetCookie(w, c)
 }
 
-// setSession stores the session id to ticket mapping in the Client.
-func (c *Client) setSession(id string, ticket string) {
-	if glog.V(2) {
-		glog.Infof("Recording session, %v -> %v", id, ticket)
-	}
-
-	c.mu.Lock()
-	c.sessions[id] = ticket
-	c.mu.Unlock()
-}
-
 // clearSession removes the session from the client and clears the cookie.
 func (c *Client) clearSession(w http.ResponseWriter, r *http.Request) {
 	cookie := getCookie(w, r)
 
-	if s, ok := c.sessions[cookie.Value]; ok {
+	if s := cookie.Value; s != "" {
 		if err := c.tickets.Delete(s); err != nil {
 			fmt.Printf("Failed to remove %v from %T: %v\n", cookie.Value, c.tickets, err)
 			if glog.V(2) {
 				glog.Errorf("Failed to remove %v from %T: %v", cookie.Value, c.tickets, err)
 			}
 		}
-
-		c.deleteSession(s)
 	}
 
 	clearCookie(w, cookie)
-}
-
-// deleteSession removes the session from the client
-func (c *Client) deleteSession(id string) {
-	c.mu.Lock()
-	delete(c.sessions, id)
-	c.mu.Unlock()
-}
-
-// findAndDeleteSessionWithTicket removes the session from the client via Single Log Out
-//
-// When a Single Log Out request is received we receive the service ticket identidier. This
-// function loops through the sessions to find the matching session id. Once retrieved the
-// session is removed from the client. When the session is next requested the getSession
-// function will notice the session is invalid and revalidate the user.
-func (c *Client) findAndDeleteSessionWithTicket(ticket string) {
-	var id string
-	for s, t := range c.sessions {
-		if t == ticket {
-			id = s
-			break
-		}
-	}
-
-	if id == "" {
-		return
-	}
-
-	c.deleteSession(id)
 }
