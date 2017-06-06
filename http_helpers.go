@@ -108,6 +108,21 @@ func Attributes(r *http.Request) UserAttributes {
 	return nil
 }
 
+// Attributes returns the authenticated users attributes.
+func Update(r *http.Request) {
+	if a := getAuthenticationResponse(r); a != nil {
+		if c := getClient(r); c != nil {
+			cookie := getCookie(nil, r)
+			if s := cookie.Value; s != "" {
+				c.tickets.Write(s, a)
+			}
+		}
+		//		setAuthenticationResponse(r, a)
+	}
+
+	// return nil
+}
+
 // AuthenticationDate returns the date and time that authentication was performed.
 //
 // This may return time.IsZero if Authentication Date information is not included
